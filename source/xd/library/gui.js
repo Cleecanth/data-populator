@@ -318,7 +318,8 @@ export async function showPopulatorDialog (type, options, data) {
       try {
         jsonData = JSON.parse(await Data.loadFileWithPathInDataFolder(path))
         if (newSelection) {
-          JSONKeyInput.value = Utils.getArrayStringAccessor(jsonData)
+          // JSONKeyInput.value = Utils.getArrayStringAccessor(jsonData)
+          JSONKeyInput.value = Object.keys(jsonData)[0]
           key = JSONKeyInput.value
         }
 
@@ -343,7 +344,8 @@ export async function showPopulatorDialog (type, options, data) {
         }
 
         if (newSelection) {
-          JSONKeyInput.value = Utils.getArrayStringAccessor(jsonData)
+          // JSONKeyInput.value = Utils.getArrayStringAccessor(jsonData)
+          JSONKeyInput.value = Object.keys(jsonData)[0]
           key = JSONKeyInput.value
         }
 
@@ -415,7 +417,8 @@ export async function showPopulatorDialog (type, options, data) {
           }).then(response => response.json())
 
           if (load) {
-            JSONKeyInput.value = Utils.getArrayStringAccessor(jsonData)
+            // JSONKeyInput.value = Utils.getArrayStringAccessor(jsonData)
+            JSONKeyInput.value = Object.keys(jsonData)[0];
             key = JSONKeyInput.value
           }
 

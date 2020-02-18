@@ -4,7 +4,9 @@
  * Provides utility and miscellaneous functionality.
  */
 
-import {log} from '../../core'
+import { log } from '../../core'
+import xd from './xd';
+const { Group, SymbolInstance } = xd('scenegraph')
 
 /**
  * Checks if url is valid.
@@ -114,4 +116,13 @@ export function getArrayStringAccessor (object) {
 
   // log(string)
   return string
+}
+
+/**
+ * Checks if a node is a Group or SymbolInstance (Component)
+ * @param {SceneNode} node - the node to check
+ * @returns {Boolean}
+ */
+export function isGroupLike(node) {
+  return (node instanceof Group || node instanceof SymbolInstance);
 }

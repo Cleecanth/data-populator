@@ -6,6 +6,7 @@
 
 import * as Core from '../../core'
 import { log } from '../../core'
+import { isGroupLike } from './utils'
 import * as Data from './data'
 import * as Gui from './gui'
 import * as Storage from './storage'
@@ -21,16 +22,20 @@ const {
   RepeatGrid,
   Text,
   Rectangle,
-  ImageFill
+  ImageFill,
+  SymbolInstance
 } = xd('scenegraph')
 const commands = xd('commands')
 
 let fullDataSet
-let populatedAtLeastOneLayer
+let _POPULATED_ONE_LAYER_ = false;
+
 export async function populateLayers (layers, data, opt) {
 
+  console.log('populating layers: ', layers);
+
   fullDataSet = data
-  populatedAtLeastOneLayer = false
+  _POPULATED_ONE_LAYER_ = false
 
   // track used data rows
   let usedRows = []
@@ -40,19 +45,48 @@ export async function populateLayers (layers, data, opt) {
 
   await Storage.load()
 
-  // populate each root layer
-  for (let i = 0; i < layers.length; i++) {
-    let layer = layers[i]
-    let dataRow = Core.populator.selectDataRow(data, usedRows, opt.randomizeData)
-    populatedLayers.push(await populateLayer(layer, dataRow, opt))
+  async function loopLayers(layers) {
+    // populate each root layer
+    for (let i = 0; i < layers.length; i++) {
+      let layer = layers[i] || layers.at(i);
+      let dataRow = Core.populator.selectDataRow(data, usedRows, opt.randomizeData)
+      //console.log("populating layer:", layer);
+      populatedLayers.push(await populateLayer(layer, dataRow, opt))
+    }
+  }
+
+  if (
+    layers.length
+    && layers.length === 1
+    && layers[0]
+    && isGroupLike(layers[0])
+  ) {
+    let initial_layers = layers;
+    let initial_root = Context().root;
+    let structure;
+    let layers_to_loop = layers[0].children;
+    layers[0] instanceof Group
+      && (structure = degroup(layers[0]))
+      && (layers_to_loop = Context().selection.items)
+      || (Context(layers[0], initial_root));
+
+    console.log('group context', layers_to_loop);
+
+    await loopLayers(layers_to_loop);
+    layers[0] instanceof Group && regroup(structure);
+    populatedLayers = Context().selection.items;
+  }
+  else {
+    await loopLayers(layers);
   }
 
   await Storage.save()
 
   // restore selection to populated layers
+  console.log(populatedLayers)
   Context().selection.items = populatedLayers
 
-  if (!populatedAtLeastOneLayer) {
+  if (!_POPULATED_ONE_LAYER_) {
     await Gui.createAlert(Strings(STRINGS.POPULATING_FAILED), Strings(STRINGS.NO_MATCHING_KEYS))
     await clearLayers(populatedLayers)
   }
@@ -65,25 +99,41 @@ export async function populateLayer (layer, data, opt) {
     Actions.performActions(layer, data)
   }
 
-  let structure = degroup(layer)
+  let structure;
 
-  for (let i = 0; i < Context().selection.items.length; i++) {
-    let ungroupedLayer = Context().selection.items[i]
+  async function loopAndPopulate(layer) {
+    let destructure = degroup(layer);
+    let ctx_items = Context().selection.items;
 
-    if (ungroupedLayer instanceof RepeatGrid) {
-      await populateRepeatGridLayer(ungroupedLayer, data, opt)
-    }
-    if (ungroupedLayer instanceof Text) {
-      await populateTextLayer(ungroupedLayer, data, opt)
-    }
-    if (ungroupedLayer instanceof Rectangle) {
-      await populateRectangleLayer(ungroupedLayer, data, opt)
+    for (let i = 0; i < ctx_items.length; i++) {
+      let ungroupedLayer = ctx_items[i]
+
+      if (ungroupedLayer instanceof Group) {
+        //console.log('relooping group: ', ungroupedLayer);
+        await loopAndPopulate(ungroupedLayer);
+      }
+      if (ungroupedLayer instanceof RepeatGrid) {
+        //console.log('populating RepeatGrid: ', ungroupedLayer)
+        await populateRepeatGridLayer(ungroupedLayer, data, opt)
+      }
+      if (ungroupedLayer instanceof Text) {
+        //console.log('populating text: ', ungroupedLayer);
+        await populateTextLayer(ungroupedLayer, data, opt)
+      }
+      if (ungroupedLayer instanceof Rectangle) {
+        //console.log('populating Rectangle: ', ungroupedLayer);
+        await populateRectangleLayer(ungroupedLayer, data, opt)
+      }
+
+      Actions.performActions(ungroupedLayer, data)
     }
 
-    Actions.performActions(ungroupedLayer, data)
+    structure = destructure;
+
+    regroup(destructure)
   }
 
-  regroup(structure)
+  await loopAndPopulate(layer);
 
   return structure.layer
 }
@@ -107,7 +157,7 @@ async function populateArtboardLayer (layer, data, opt) {
 
     // populate placeholder found in the original text
     let populatedPlaceholder = Core.placeholders.populatePlaceholder(placeholder, data, opt.defaultSubstitute, true).populated
-    if (Core.placeholders.populatePlaceholder(placeholder, data, opt.defaultSubstitute, true).hasValueForKey) populatedAtLeastOneLayer = true
+    if (Core.placeholders.populatePlaceholder(placeholder, data, opt.defaultSubstitute, true).hasValueForKey) _POPULATED_ONE_LAYER_ = true
 
     // replace original placeholder string (e.g. {firstName}) with populated placeholder string
     populatedString = populatedString.replace(placeholder.string, populatedPlaceholder)
@@ -123,123 +173,178 @@ async function populateRepeatGridLayer (layer, data, opt) {
   let dataSeries = {}
   let usedRows = []
   let dataRows = []
+  let loop = 0;
+  const _INITIAL_CTX_ = Context();
 
-  let numberOfDataRows = Math.min(layer.children.length, fullDataSet.length)
+  let numberOfDataRows = Math.min(layer.children.length, fullDataSet.length);
+
   for (let i = 0; i < numberOfDataRows; i++) {
     dataRows.push(Core.populator.selectDataRow(fullDataSet, usedRows, opt.randomizeData))
   }
 
-  await Promise.all(layer.children.at(0).children.map(async childLayer => {
+  async function textLayer(childLayer) {
 
-    if (childLayer instanceof Text) {
-      if (!dataSeries[childLayer.guid]) dataSeries[childLayer.guid] = []
+    if (!dataSeries[childLayer.guid]) { dataSeries[childLayer.guid] = [] }
 
-      for (let i = 0; i < dataRows.length; i++) {
-        let populatedString
-        let originalLayerData = Storage.get(childLayer.guid)
-        if (originalLayerData) {
-          if (childLayer.name === originalLayerData.text) {
+    for (let i = 0; i < dataRows.length; i++) {
+      let populatedString;
+      let originalLayerData = Storage.get(childLayer.guid)
+      if (originalLayerData) {
+        if (childLayer.name === originalLayerData.text) {
+          populatedString = originalLayerData.text
+        } else {
+          let p = Core.placeholders.extractPlaceholders(childLayer.name)
+          if (p.length) {
+            populatedString = childLayer.name
+          } else {
             populatedString = originalLayerData.text
-          } else {
-            let p = Core.placeholders.extractPlaceholders(childLayer.name)
-            if (p.length) {
-              populatedString = childLayer.name
-            } else {
-              populatedString = originalLayerData.text
-            }
           }
         }
-        else {
-          if (childLayer.name === childLayer.text) {
+      }
+      else {
+        if (childLayer.name === childLayer.text) {
+          populatedString = childLayer.text
+        } else {
+          let p = Core.placeholders.extractPlaceholders(childLayer.name)
+          if (p.length) {
+            populatedString = childLayer.name
+          } else {
             populatedString = childLayer.text
-          } else {
-            let p = Core.placeholders.extractPlaceholders(childLayer.name)
-            if (p.length) {
-              populatedString = childLayer.name
-            } else {
-              populatedString = childLayer.text
-            }
           }
-
-          Storage.set(childLayer.guid, {
-            text: childLayer.text
-          })
         }
 
-        let placeholders = Core.placeholders.extractPlaceholders(populatedString)
-        placeholders.forEach((placeholder) => {
-          let populatedPlaceholder = Core.placeholders.populatePlaceholder(placeholder, dataRows[i], opt.defaultSubstitute, true).populated
-          if (Core.placeholders.populatePlaceholder(placeholder, dataRows[i], opt.defaultSubstitute, true).hasValueForKey) populatedAtLeastOneLayer = true
-
-          populatedString = populatedString.replace(placeholder.string, populatedPlaceholder)
+        Storage.set(childLayer.guid, {
+          text: childLayer.text
         })
-
-        if (!populatedString.length) populatedString = ' '
-
-        dataSeries[childLayer.guid].push(populatedString)
-
-        if (i === dataRows.length - 1) layer.attachTextDataSeries(childLayer, dataSeries[childLayer.guid])
-      }
-    }
-
-    if (childLayer instanceof Rectangle) {
-
-      if (!dataSeries[childLayer.guid]) dataSeries[childLayer.guid] = []
-
-      // extract image placeholder from layer name
-      let imagePlaceholder = Core.placeholders.extractPlaceholders(childLayer.name)[0]
-      if (!imagePlaceholder) return
-
-      if (Core.placeholders.populatePlaceholder(imagePlaceholder, dataRows[0], opt.defaultSubstitute, true).hasValueForKey) {
-        populatedAtLeastOneLayer = true
-      } else {
-        return
       }
 
-      let images = await Promise.all(dataRows.map(async dataRow => {
+      let placeholders = Core.placeholders
+        .extractPlaceholders(populatedString)
 
-        // get url by populating the placeholder
-        let imageUrl = Core.placeholders.populatePlaceholder(imagePlaceholder, dataRow, opt.defaultSubstitute, true).populated
-        imageUrl = imageUrl.replace(/\s/g, '%20')
+      placeholders.forEach((placeholder) => {
+          let populatedPlaceholder = Core
+            .placeholders
+            .populatePlaceholder(
+              placeholder, dataRows[i], opt.defaultSubstitute, true
+            )
+            .populated
 
-        //= ================================================
-        // get image base64
-        if (imageUrl.startsWith('http')) {
-
-          let response
-          try {
-            response = await global.fetch(imageUrl)
-          } catch (e) {
-            console.log(e)
-          }
-
-          if (response) {
-            const buffer = await response.arrayBuffer()
-            let base64Flag = 'data:image/jpeg;base64,'
-            let imageStr = base64ArrayBuffer(buffer)
-
-            return Promise.resolve(base64Flag + imageStr)
-          } else {
-            return Promise.resolve(getRectanglePlaceholderBase64(childLayer))
-          }
+        if (
+          Core.placeholders.populatePlaceholder(
+            placeholder, dataRows[i], opt.defaultSubstitute, true
+          ).hasValueForKey
+        ) {
+          _POPULATED_ONE_LAYER_ = true
         }
-        else {
-          return Promise.resolve(await getLocalImageBase64(childLayer, imageUrl))
-        }
-      }))
 
-      //= ================================================
-
-      images.forEach(image => {
-        const imageFill = new ImageFill(image)
-        dataSeries[childLayer.guid].push(imageFill)
+        populatedString = populatedString
+          .replace(placeholder.string, populatedPlaceholder)
       })
 
-      if (dataSeries[childLayer.guid].length) {
-        await layer.attachImageDataSeries(childLayer, dataSeries[childLayer.guid])
+      if (!populatedString.length) populatedString = ' '
+
+      dataSeries[childLayer.guid].push(populatedString)
+
+      if (i === dataRows.length - 1) {
+        layer.attachTextDataSeries(childLayer, dataSeries[childLayer.guid])
       }
     }
-  }))
+  }
+
+  async function rectangleLayer(childLayer) {
+    if (!dataSeries[childLayer.guid]) dataSeries[childLayer.guid] = []
+
+    // extract image placeholder from layer name
+    let imagePlaceholder = Core.placeholders.extractPlaceholders(childLayer.name)[0]
+    if (!imagePlaceholder) return
+
+    if (Core.placeholders.populatePlaceholder(imagePlaceholder, dataRows[0], opt.defaultSubstitute, true).hasValueForKey) {
+      _POPULATED_ONE_LAYER_ = true
+    } else {
+      return
+    }
+
+    let images = await Promise.all(dataRows.map(async dataRow => {
+
+      // get url by populating the placeholder
+      let imageUrl = Core.placeholders.populatePlaceholder(imagePlaceholder, dataRow, opt.defaultSubstitute, true).populated
+      imageUrl = imageUrl.replace(/\s/g, '%20')
+
+      //= ================================================
+      // get image base64
+      if (imageUrl.startsWith('http')) {
+
+        let response
+        try {
+          response = await global.fetch(imageUrl)
+        } catch (e) {
+          console.log(e)
+        }
+
+        if (response) {
+          const buffer = await response.arrayBuffer()
+          let base64Flag = 'data:image/jpeg;base64,'
+          let imageStr = base64ArrayBuffer(buffer)
+
+          return Promise.resolve(base64Flag + imageStr)
+        } else {
+          return Promise.resolve(getRectanglePlaceholderBase64(childLayer))
+        }
+      }
+      else {
+        return Promise.resolve(await getLocalImageBase64(childLayer, imageUrl))
+      }
+    }))
+
+    //= ================================================
+
+    images.forEach(image => {
+      const imageFill = new ImageFill(image)
+      dataSeries[childLayer.guid].push(imageFill)
+    })
+
+    if (dataSeries[childLayer.guid].length) {
+      await layer.attachImageDataSeries(childLayer, dataSeries[childLayer.guid])
+    }
+  }
+
+  async function mapChildren(children) {
+      loop++;
+      await children.map(async (childLayer) => {
+        //console.log('childLayer mapping:', typeof childLayer, childLayer);
+
+        if (loop > 100) {
+          //console.log('Bailing out. Too Many loops.')
+          return;
+        }
+
+        if (childLayer instanceof Text) {
+          //console.log('found text', childLayer);
+          await textLayer(childLayer);
+        }
+
+        if (childLayer instanceof Rectangle) {
+          await rectangleLayer(childLayer);
+        }
+
+        if (isGroupLike(childLayer)) {
+          //console.log('------\nfound group:', childLayer);
+
+          let ctx = Context(childLayer);
+          if (childLayer instanceof SymbolInstance) {
+            await Gui.createAlert("Cannot populate Components in Repeat Grids", "Repeat Grids must be comprised of regular groups (or plain objects).").then(()=> {
+              return
+            });
+          }
+          await mapChildren(childLayer.children);
+          Context(_INITIAL_CTX_);
+        }
+      })
+  }
+
+  //console.log('mapping children:', layer.children.at(0));
+  await mapChildren(layer.children.at(0).children)
+
 }
 
 async function populateTextLayer (layer, data, opt) {
@@ -280,7 +385,7 @@ async function populateTextLayer (layer, data, opt) {
 
     // populate placeholder found in the original text
     let populatedPlaceholder = Core.placeholders.populatePlaceholder(placeholder, data, opt.defaultSubstitute, true).populated
-    if (Core.placeholders.populatePlaceholder(placeholder, data, opt.defaultSubstitute, true).hasValueForKey) populatedAtLeastOneLayer = true
+    if (Core.placeholders.populatePlaceholder(placeholder, data, opt.defaultSubstitute, true).hasValueForKey) _POPULATED_ONE_LAYER_ = true
 
     // replace original placeholder string (e.g. {firstName}) with populated placeholder string
     populatedString = populatedString.replace(placeholder.string, populatedPlaceholder)
@@ -297,26 +402,6 @@ async function populateTextLayer (layer, data, opt) {
   }
 }
 
-function trimText (layer, insertEllipsis) {
-  let text = layer.text
-
-  let tooShort = false
-  while (layer.clippedByArea && !tooShort) {
-    text = text.substring(0, text.length - 1)
-
-    if (insertEllipsis) {
-      layer.text = text + '…'
-    } else {
-      if (text.length > 0) {
-        layer.text = text
-      } else {
-        tooShort = true
-        layer.text = ' '
-      }
-    }
-  }
-}
-
 async function populateRectangleLayer (layer, data, opt) {
 
   // extract image placeholder from layer name
@@ -326,7 +411,7 @@ async function populateRectangleLayer (layer, data, opt) {
   // get url by populating the placeholder
   let imageUrl = Core.placeholders.populatePlaceholder(imagePlaceholder, data, opt.defaultSubstitute, true).populated
   if (Core.placeholders.populatePlaceholder(imagePlaceholder, data, opt.defaultSubstitute, true).hasValueForKey) {
-    populatedAtLeastOneLayer = true
+    _POPULATED_ONE_LAYER_ = true
   } else {
     return
   }
@@ -362,6 +447,26 @@ async function populateRectangleLayer (layer, data, opt) {
   // set fill
   const imageFill = new ImageFill(imageBase64)
   layer.fill = imageFill
+}
+
+function trimText (layer, insertEllipsis) {
+  let text = layer.text
+
+  let tooShort = false
+  while (layer.clippedByArea && !tooShort) {
+    text = text.substring(0, text.length - 1)
+
+    if (insertEllipsis) {
+      layer.text = text + '…'
+    } else {
+      if (text.length > 0) {
+        layer.text = text
+      } else {
+        tooShort = true
+        layer.text = ' '
+      }
+    }
+  }
 }
 
 function getRectanglePlaceholderBase64 (layer) {
@@ -483,23 +588,33 @@ export async function clearLayer (layer) {
     await clearArtboardLayer(layer)
   }
 
-  let structure = degroup(layer)
+  let structure;
 
-  for (let i = 0; i < Context().selection.items.length; i++) {
-    let ungroupedLayer = Context().selection.items[i]
+  async function loopAndClear(layer) {
+    let destructure = degroup(layer);
+    let ctx_items = Context().selection.items;
 
-    if (ungroupedLayer instanceof RepeatGrid) {
-      await clearRepeatGridLayer(ungroupedLayer)
+    for (let i = 0; i < ctx_items.length; i++) {
+      let ungroupedLayer = ctx_items[i]
+
+      if (ungroupedLayer instanceof Group) {
+        await loopAndClear(ungroupedLayer);
+      }
+      if (ungroupedLayer instanceof RepeatGrid) {
+        await clearRepeatGridLayer(ungroupedLayer)
+      }
+      if (ungroupedLayer instanceof Text) {
+        await clearTextLayer(ungroupedLayer)
+      }
+      if (ungroupedLayer instanceof Rectangle) {
+        await clearRectangleLayer(ungroupedLayer)
+      }
     }
-    if (ungroupedLayer instanceof Text) {
-      await clearTextLayer(ungroupedLayer)
-    }
-    if (ungroupedLayer instanceof Rectangle) {
-      await clearRectangleLayer(ungroupedLayer)
-    }
+    structure = destructure
+    regroup(structure);
   }
 
-  regroup(structure)
+  await loopAndClear(layer);
 
   return structure.layer
 }
@@ -516,24 +631,31 @@ async function clearArtboardLayer (layer) {
 }
 
 async function clearRepeatGridLayer (layer) {
-  layer.children.at(0).children.forEach(childLayer => {
-    if (childLayer instanceof Text) {
-      let originalLayerData = Storage.get(childLayer.guid)
-      if (!originalLayerData) return
+  function loopLayers(layer) {
+    layer.children.at(0).children.forEach((childLayer) => {
+      if (childLayer instanceof Group) {
+        loopLayers(childLayer);
+      }
 
-      Storage.set(childLayer.guid, null)
+      if (childLayer instanceof Text) {
+        let originalLayerData = Storage.get(childLayer.guid)
+        if (!originalLayerData) return
 
-      layer.attachTextDataSeries(childLayer, [originalLayerData.text])
-    }
-    if (childLayer instanceof Rectangle) {
-      let imagePlaceholder = Core.placeholders.extractPlaceholders(childLayer.name)[0]
-      if (!imagePlaceholder) return
+        Storage.set(childLayer.guid, null)
 
-      // const colorFill = new Color('#ffffff', 0)
-      let imageFill = new ImageFill(getRectanglePlaceholderBase64(childLayer))
-      layer.attachImageDataSeries(childLayer, [imageFill])
-    }
-  })
+        layer.attachTextDataSeries(childLayer, [originalLayerData.text])
+      }
+      if (childLayer instanceof Rectangle) {
+        let imagePlaceholder = Core.placeholders.extractPlaceholders(childLayer.name)[0]
+        if (!imagePlaceholder) return
+
+        // const colorFill = new Color('#ffffff', 0)
+        let imageFill = new ImageFill(getRectanglePlaceholderBase64(childLayer))
+        layer.attachImageDataSeries(childLayer, [imageFill])
+      }
+    })
+  }
+  loopLayers(layer);
 }
 
 async function clearTextLayer (layer) {
@@ -570,7 +692,11 @@ function degroup (layer, nestedCall, parentStructure) {
 
   if (layer instanceof Artboard || layer instanceof Group) {
 
-    Context().selection.items = [layer]
+    //console.log('Selecting layer (degroup): ', layer);
+
+    let ctx = Context().selection.items = [layer];
+
+    //console.log('New Context (degroup):', ctx);
 
     let children = []
     layer.children.forEach(childLayer => {

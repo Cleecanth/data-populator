@@ -12,7 +12,7 @@ const zip = require('gulp-zip')
 const plugin = require('./plugin')['plugin']
 
 let XD_DEVELOP_FOLDER = path.join(expandTilde('~'),
-  '/Library/Application Support/Adobe/Adobe XD CC (Prerelease)/develop')
+  '/Library/Application Support/Adobe/Adobe XD/develop')
 
 gulp.task('build', function (callback) {
   runSequence(

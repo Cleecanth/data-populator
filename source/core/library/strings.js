@@ -116,7 +116,7 @@ export const NEED_HELP_DESCRIPTION = 'needHelpDescription'
 export const strings = {
   en: {
     // Data Populator
-    [DATA_POPULATOR_TITLE]: 'Data Populator',
+    [DATA_POPULATOR_TITLE]: 'Data Populator LOCAL',
     [DATA_POPULATOR_DESCRIPTION]: 'A plugin to populate your design mockups with meaningful data. Goodbye Lorem Ipsum. Hello JSON.',
     [DATA_POPULATOR_URL]: 'http://datapopulator.com',
 

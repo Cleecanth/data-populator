@@ -61,6 +61,8 @@ export default async (selection, root) => {
 
   // populate layers
   let options = await Options()
+
+  let _NODE = selection.items[0];
   await Populator.populateLayers(selection.items, data, {
     randomizeData: options[OPTIONS.RANDOMIZE_DATA],
     trimText: options[OPTIONS.TRIM_TEXT],
